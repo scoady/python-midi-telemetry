@@ -40,6 +40,8 @@ If I were to encounter errors in my MIDI capturing, I'd then be able to easily s
 *Metrics* :
 * When spans are sent through the opentelemetry collector, metrics are generated via the `spanmetrics` connector. Since I would like to have a more granular view in to these metrics (i.e., count by note number, count by dynamic value, etc), I need to write a `spanmetrics` configuration that creates the relevant dimensions for me.
 
+![alt text](<image copy.png>)
+
 ```yaml
 connectors:
   spanmetrics:
