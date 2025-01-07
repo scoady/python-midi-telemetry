@@ -1,0 +1,163 @@
+
+extensions:
+  basicauth/grafana_cloud:
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/extension/basicauthextension
+    client_auth:
+      username: "${GRAFANA_USERNAME}"
+      ## password from environment variable GRAFANA_PASSWORD ##
+      password: "${GRAFANA_PASSWORD}"
+
+
+connectors:
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [100us, 500us, 1ms, 5ms, 10ms, 50ms, 100ms, 500ms, 1s] # Adjusted for real-time MIDI response
+    dimensions:
+      - name: note # Dimension for analyzing latency by MIDI note
+      - name: velocity_on # Optional: Include velocity of "note_on" for additional granularity
+      - name: velocity_off # Optional: Include velocity of "note_off"
+      - name: elapsed_time
+      - name: service_name
+      - name: dynamics
+      - name: stream_id
+    exemplars:
+      enabled: true
+    exclude_dimensions: ['status.code']
+    dimensions_cache_size: 1000
+    aggregation_temporality: "AGGREGATION_TEMPORALITY_CUMULATIVE"    
+    metrics_flush_interval: 15s
+    metrics_expiration: 5m
+    events:
+      enabled: true
+      dimensions:
+        - name: exception.type
+        - name: exception.message
+    resource_metrics_key_attributes:
+      - service.name
+      - telemetry.sdk.language
+      - telemetry.sdk.name
+  grafanacloud:
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/connector/grafanacloudconnector
+    host_identifiers: ["host.name"]
+
+receivers:
+  filelog:
+    include: ["/app/application_logs.json"]  # Match the path where the file is mounted in the container
+    start_at: beginning
+    operators:
+      - type: json_parser
+        id: json_parser
+        preserve_to: attributes
+    ## add service_name to the log record
+  otlp:
+    # https://github.com/open-telemetry/opentelemetry-collector/tree/main/receiver/otlpreceiver
+    protocols:
+      grpc: {}
+      http:
+        endpoint: "0.0.0.0:4318"
+
+  hostmetrics:
+    # Optional. Host Metrics Receiver added as an example of Infra Monitoring capabilities of the OpenTelemetry Collector
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/hostmetricsreceiver
+    scrapers:
+      load:
+      memory:
+
+processors:
+  batch:
+    # https://github.com/open-telemetry/opentelemetry-collector/tree/main/processor/batchprocessor
+  resourcedetection:
+    # Enriches telemetry data with resource information from the host
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/resourcedetectionprocessor
+    detectors: ["env", "system"]
+    override: false
+  transform/drop_unneeded_resource_attributes:
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/transformprocessor
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - delete_key(attributes, "k8s.pod.start_time")
+          - delete_key(attributes, "os.description")
+          - delete_key(attributes, "os.type")
+          - delete_key(attributes, "process.command_args")
+          - delete_key(attributes, "process.executable.path")
+          - delete_key(attributes, "process.pid")
+          - delete_key(attributes, "process.runtime.description")
+          - delete_key(attributes, "process.runtime.name")
+          - delete_key(attributes, "process.runtime.version")
+    metric_statements:
+      - context: resource
+        statements:
+          - delete_key(attributes, "k8s.pod.start_time")
+          - delete_key(attributes, "os.description")
+          - delete_key(attributes, "os.type")
+          - delete_key(attributes, "process.command_args")
+          - delete_key(attributes, "process.executable.path")
+          - delete_key(attributes, "process.pid")
+          - delete_key(attributes, "process.runtime.description")
+          - delete_key(attributes, "process.runtime.name")
+          - delete_key(attributes, "process.runtime.version")
+    log_statements:
+      - context: log
+        statements:
+          - delete_key(attributes, "k8s.pod.start_time")
+          - delete_key(attributes, "os.description")
+          - delete_key(attributes, "os.type")
+          - delete_key(attributes, "process.command_args")
+          - delete_key(attributes, "process.executable.path")
+          - delete_key(attributes, "process.pid")
+          - delete_key(attributes, "process.runtime.description")
+          - delete_key(attributes, "process.runtime.name")
+          - delete_key(attributes, "process.runtime.version")
+          - set(attributes["service_name"], "midi_audio_processor")
+      - context: resource
+        statements:
+          - set(attributes["deployment.environment"], "production")
+          - set(attributes["service.version"], "1.0.0")
+          - set(attributes["service.name"], "midi_audio_processor")  # Assigning a constant value for clarity
+          - set(attributes["service_name"], "midi_audio_processor")  # Assigning a constant value for clarity
+
+
+
+
+
+  transform/add_resource_attributes_as_metric_attributes:
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/transformprocessor
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["deployment.environment"], resource.attributes["deployment.environment"])
+          - set(attributes["service.version"], resource.attributes["service.version"])
+
+
+exporters:
+  debug:
+    verbosity: detailed
+  otlphttp/grafana_cloud:
+    # https://github.com/open-telemetry/opentelemetry-collector/tree/main/exporter/otlpexporter
+    endpoint: "https://otlp-gateway-prod-us-west-0.grafana.net/otlp"
+    auth:
+      authenticator: basicauth/grafana_cloud
+
+service:
+  extensions: [basicauth/grafana_cloud]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resourcedetection, transform/drop_unneeded_resource_attributes, batch]
+      exporters: [otlphttp/grafana_cloud, grafanacloud,spanmetrics]
+    metrics:
+      receivers: [otlp, hostmetrics]
+      processors: [resourcedetection, transform/drop_unneeded_resource_attributes, transform/add_resource_attributes_as_metric_attributes, batch]
+      exporters: [otlphttp/grafana_cloud]
+    metrics/grafanacloud:
+      receivers: [grafanacloud,spanmetrics]
+      processors: [batch]
+      exporters: [otlphttp/grafana_cloud]
+    logs:
+      receivers: [otlp,filelog]
+      processors: [batch,transform/drop_unneeded_resource_attributes]
+      exporters: [otlphttp/grafana_cloud,debug]
